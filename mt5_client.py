@@ -174,7 +174,7 @@ class MT5Client:
 
     async def symbol_info(self, symbol: str) -> SymbolInfo:
         await self.ensure_symbol_visible(symbol)
-        raw = await asyncio.get_event_loop().run_in_executor(None, mt5.symbol_info, symbol)
+        raw = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.symbol_info(symbol))
         if raw is None:
             raise MT5SymbolError(f"symbol_info({symbol}) failed: {mt5.last_error()}")
         return SymbolInfo(
@@ -207,7 +207,7 @@ class MT5Client:
         return int(time.time())  # fallback — overridden by tick time below
 
     async def server_time_from_symbol(self, symbol: str) -> int:
-        tick = await asyncio.get_event_loop().run_in_executor(None, mt5.symbol_info_tick, symbol)
+        tick = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.symbol_info_tick(symbol))
         if tick is None:
             return int(time.time())
         return tick.time
@@ -215,14 +215,14 @@ class MT5Client:
     async def get_open_positions(self, symbol: Optional[str] = None):
         """Return list of open mt5.TradePosition objects."""
         if symbol:
-            res = await asyncio.get_event_loop().run_in_executor(None, mt5.positions_get, symbol)
+            res = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.positions_get(symbol=symbol))
         else:
             res = await asyncio.get_event_loop().run_in_executor(None, mt5.positions_get)
         return res or []
 
     async def get_open_orders(self, symbol: Optional[str] = None):
         if symbol:
-            res = await asyncio.get_event_loop().run_in_executor(None, mt5.orders_get, symbol)
+            res = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.orders_get(symbol=symbol))
         else:
             res = await asyncio.get_event_loop().run_in_executor(None, mt5.orders_get)
         return res or []
@@ -279,7 +279,7 @@ class MT5Client:
 
     async def ensure_symbol_visible(self, symbol: str) -> None:
         """Add symbol to Market Watch if absent."""
-        success = await asyncio.get_event_loop().run_in_executor(None, mt5.symbol_select, symbol, True)
+        success = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.symbol_select(symbol, True))
         if not success:
             raise MT5SymbolError(
                 f"Cannot enable symbol '{symbol}' in Market Watch: {mt5.last_error()}"

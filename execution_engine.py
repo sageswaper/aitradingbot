@@ -184,7 +184,7 @@ class ExecutionEngine:
         from datetime import datetime, timedelta
 
         end = datetime.now()
-        start = end - timedelta(minutes=5)
+        start = end - timedelta(days=1)
         deals = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.history_deals_get(start, end))
         
         profit, entry_price, close_price, trade_type = 0.0, 0.0, 0.0, "UNKNOWN"
@@ -202,7 +202,9 @@ class ExecutionEngine:
         if entry_price == 0: return time.time()
 
         trade_data = {"symbol": symbol, "profit": profit, "entry_price": entry_price, "close_price": close_price, "type": trade_type, "lot": volume}
-        reasoning = await self._brain.analyze_trade_outcome(trade_data) if self._brain else "Auto-closure"
+        
+        # Trigger Comprehensive Post-Mortem in Arabic for Aggressive Experimental Phase
+        reasoning = await self._brain.analyze_trade_outcome(trade_data, comprehensive=True) if self._brain else "Auto-closure"
         
         await TelegramNotifier.notify_trade_close(
             symbol=symbol, ticket=ticket, profit=trade_data['profit'], detail="External closure",
@@ -214,7 +216,7 @@ class ExecutionEngine:
         if DRY_RUN: return {"success": True, "detail": "DRY RUN"}
 
         from config import MAGIC_NUMBER
-        pos = await asyncio.get_event_loop().run_in_executor(None, mt5.positions_get, ticket)
+        pos = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.positions_get(ticket=ticket))
         if not pos: return {"retcode": -1, "comment": "Position not found"}
         
         p = pos[0]
@@ -236,16 +238,24 @@ class ExecutionEngine:
             "type_filling": int(mt5.ORDER_FILLING_FOK)
         }
         
-        result = await asyncio.get_event_loop().run_in_executor(None, mt5.order_send, request)
+        result = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.order_send(request))
         if result and result.retcode in (mt5.TRADE_RETCODE_DONE, 10009, 0):
             # Try to get actual profit
             await asyncio.sleep(0.5)
             history = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.history_deals_get(position=ticket))
             profit = sum([d.profit + d.commission + d.swap for d in history if d.entry == mt5.DEAL_ENTRY_OUT]) if history else 0.0
             
+            trade_data = {
+                "symbol": symbol, "profit": profit, "entry_price": p.price_open, 
+                "close_price": request["price"], "type": "BUY" if is_buy else "SELL", "lot": lots
+            }
+            
+            # Trigger Comprehensive Post-Mortem
+            ai_explanation = await self._brain.analyze_trade_outcome(trade_data, comprehensive=True) if self._brain else reason
+
             await TelegramNotifier.notify_trade_close(
                 symbol=symbol, ticket=ticket, profit=profit, detail=reason,
-                lot=lots, entry_price=p.price_open, close_price=request["price"], ai_explanation="Manual/Bot Closure"
+                lot=lots, entry_price=p.price_open, close_price=request["price"], ai_explanation=ai_explanation
             )
             return {"success": True, "retcode": result.retcode, "profit": profit}
             
@@ -280,6 +290,7 @@ class ExecutionEngine:
             await self._modify_stop_loss(pos.ticket, new_sl, pos.tp, symbol)
 
     async def manage_hard_stops(self) -> None:
+        log.debug("Checking local SL/TP failsafes...")
         from config import MAGIC_NUMBER
         positions = await self._client.get_open_positions()
         for p in positions:
@@ -328,7 +339,7 @@ class ExecutionEngine:
 
     async def _modify_stop_loss(self, ticket: int, new_sl: float, tp: float, symbol: str = "") -> None:
         request = {"action": mt5.TRADE_ACTION_SLTP, "position": ticket, "sl": new_sl, "tp": tp}
-        result = await asyncio.get_event_loop().run_in_executor(None, mt5.order_send, request)
+        result = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.order_send(request))
         if result and result.retcode == mt5.TRADE_RETCODE_DONE:
             log.info("Trailing stop updated", ticket=ticket, new_sl=new_sl)
         else:

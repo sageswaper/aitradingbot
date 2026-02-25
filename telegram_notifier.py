@@ -10,31 +10,37 @@ class TelegramNotifier:
     
     @staticmethod
     async def send_message(text: str) -> bool:
-        """Send a simple text message to the configured chat."""
+        """Send text message to Telegram, splitting if it exceeds 4096 chars."""
         if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
             log.warning("Telegram credentials not configured; skipping notification.")
             return False
 
+        # Telegram limit is 4096, using 4000 for safety
+        MAX_LEN = 4000
+        parts = [text[i:i + MAX_LEN] for i in range(0, len(text), MAX_LEN)]
+        
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML"
-        }
-
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload) as resp:
-                    if resp.status == 200:
-                        log.info("Telegram notification sent successfully.")
-                        return True
-                    else:
-                        error_text = await resp.text()
-                        log.error("Telegram API error", status=resp.status, detail=error_text)
-                        return False
-        except Exception as e:
-            log.error("Failed to send Telegram notification", error=str(e))
-            return False
+        success = True
+        
+        async with aiohttp.ClientSession() as session:
+            for part in parts:
+                payload = {
+                    "chat_id": TELEGRAM_CHAT_ID,
+                    "text": part,
+                    "parse_mode": "HTML"
+                }
+                try:
+                    async with session.post(url, json=payload) as resp:
+                        if resp.status != 200:
+                            error_text = await resp.text()
+                            log.error("Telegram API error", status=resp.status, detail=error_text)
+                            success = False
+                        else:
+                            log.info("Telegram part sent successfully.")
+                except Exception as e:
+                    log.error("Failed to send Telegram part", error=str(e))
+                    success = False
+        return success
 
     @staticmethod
     async def notify_trade_open(

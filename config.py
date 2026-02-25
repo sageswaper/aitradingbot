@@ -23,13 +23,14 @@ MT5_PATH: str = os.getenv("MT5_PATH", "")  # Optional: path to terminal64.exe
 # Trading Parameters
 # ──────────────────────────────────────────────
 SYMBOLS: list[str] = [
-    s.strip() for s in os.getenv("SYMBOLS", os.getenv("SYMBOL", "EURUSD-T")).replace(";", ",").split(",") 
-    if s.strip()
+    "EURUSD-T", "GBPUSD-T", "USDJPY-T", "USDCAD-T", "AUDUSD-T", "NZDUSD-T", "USDCHF-T", 
+    "EURGBP-T", "EURJPY-T", "GBPJPY-T", "EURCHF-T", "AUDJPY-T", "NZDJPY-T", "GBPCHF-T", 
+    "EURAUD-T", "EURCAD-T", "AUDCAD-T", "CADJPY-T", "GBPAUD-T", "GBPCAD-T",
+    "[USA30]-T", "[USA500]-T", "US100-T", "[GER40]-T", "[FRA40]-T", "[UK100]-T", "[JP225]-T",
+    "GOLD-T", "SILVER-T", "BRENT-T", "#WTI.US-T", "NGAS-T",
+    "BTCUSD-T", "ETHUSD-T", "LTCUSD-T", "XRPUSD-T", "SOLUSD-T"
 ]
-PRIORITY_SYMBOLS: list[str] = [
-    "EURUSD-T", "GBPUSD-T", "USDJPY-T", "GOLD-T", "US100-T", "BRENT-T", "AUDUSD-T", "USDCAD-T", "GBPJPY-T",
-    "[USA30]-T", "[GER40]-T"
-]
+PRIORITY_SYMBOLS: list[str] = SYMBOLS
 TIMEFRAMES: list[str] = [t.strip() for t in os.getenv("TIMEFRAMES", "M5,M15,M30,H1").split(",")]
 BARS_TO_FETCH: int = int(os.getenv("BARS_TO_FETCH", "500"))
 SCALPING_MODE: bool = os.getenv("SCALPING_MODE", "false").lower() in ("true", "1", "yes")
@@ -42,8 +43,9 @@ MAGIC_NUMBER: int = 20260224
 TRADE_COOLDOWN_MINUTES: int = 5
 MAX_SPREAD_RATIO: float = float(os.getenv("MAX_SPREAD_RATIO", "2.0")) # Veto if spread > 2x average
 MAX_DRAWDOWN_PCT: float = float(os.getenv("MAX_DRAWDOWN_PCT", "5.0"))   # % of initial bal
-MAX_OPEN_TRADES: int = int(os.getenv("MAX_OPEN_TRADES", "3"))
-DAILY_DRAWDOWN_LIMIT_PCT: float = float(os.getenv("DAILY_DRAWDOWN_LIMIT_PCT", "2.0")) # Prop-firm daily limit
+MAX_OPEN_TRADES: int = 50
+DAILY_DRAWDOWN_LIMIT_PCT: float = 20.0 # High risk for experimental mode
+CAPITAL_ALLOCATION_PCT: float = 80.0
 MAX_LOT_CAP: float = float(os.getenv("MAX_LOT_CAP", "2.0"))   # Maximum lots allowed per trade
 RISK_HIGH_CONFIDENCE: float = float(os.getenv("RISK_HIGH_CONF", "1.0"))  # % of free margin
 RISK_MED_CONFIDENCE: float = float(os.getenv("RISK_MED_CONF", "0.5"))
@@ -62,7 +64,7 @@ TRAILING_STOP_INTERVAL_SECONDS: int = 10
 # ──────────────────────────────────────────────
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "gemini").lower()  # openai|anthropic|gemini
 OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODELS: list[str] = [m.strip() for m in os.getenv("OPENAI_MODEL", "gpt-4o").split(",")]
+OPENAI_MODELS: list[str] = [m.strip() for m in os.getenv("OPENAI_MODEL", "deepseek-v3").split(",")]
 OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "https://apis.iflow.cn/v1")
 AI_CONSENSUS_THRESHOLD: int = int(os.getenv("AI_CONSENSUS_THRESHOLD", "2"))
 ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
@@ -71,8 +73,10 @@ GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-pro")
 LLM_MAX_TOKENS: int = int(os.getenv("LLM_MAX_TOKENS", "512"))
 LLM_TEMPERATURE: float = float(os.getenv("LLM_TEMPERATURE", "0.1"))
-MAX_CONCURRENT_AI_CALLS: int = int(os.getenv("MAX_CONCURRENT_AI_CALLS", "3"))
-AI_THROTTLE_SECONDS: float = 2.0
+MAX_CONCURRENT_AI_CALLS: int = 15
+AI_THROTTLE_SECONDS: float = 0.5 # Faster for high symbol count
+POST_MORTEM_MAX_TOKENS: int = 25600
+AI_VOTING_ENABLED: bool = True
 
 # ──────────────────────────────────────────────
 # Telegram Notifier
@@ -101,7 +105,7 @@ DB_PATH: Path = PROJECT_ROOT / "tradingbot_audit.db"
 # ──────────────────────────────────────────────
 # Operational Mode
 # ──────────────────────────────────────────────
-DRY_RUN: bool = os.getenv("DRY_RUN", "true").lower() in ("true", "1", "yes")
+DRY_RUN: bool = False # Live trading on Demo account as requested
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
 # ──────────────────────────────────────────────

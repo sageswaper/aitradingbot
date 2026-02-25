@@ -16,7 +16,7 @@ from config import (
     RISK_HIGH_CONFIDENCE, RISK_MED_CONFIDENCE, RISK_LOW_CONFIDENCE,
     CONFIDENCE_HIGH_THRESHOLD, CONFIDENCE_MED_THRESHOLD,
     CORRELATION_GROUPS, DAILY_DRAWDOWN_LIMIT_PCT, MAX_LOT_CAP,
-    MAX_SPREAD_RATIO
+    MAX_SPREAD_RATIO, CAPITAL_ALLOCATION_PCT
 )
 from mt5_client import MT5Client
 from logger import get_logger
@@ -140,7 +140,7 @@ class RiskManager:
                 "type_filling": int(mt5.ORDER_FILLING_FOK)
             }
             # Launch all requests into the executor concurrently
-            tasks.append(asyncio.get_event_loop().run_in_executor(None, mt5.order_send, request))
+            tasks.append(asyncio.get_event_loop().run_in_executor(None, lambda: mt5.order_send(request)))
             
         if tasks:
             log.info(f"Bombarding broker with {len(tasks)} close orders...")
@@ -180,9 +180,14 @@ class RiskManager:
     async def calculate_lot_size(self, symbol: str, sl_price: float, entry_price: float, confidence: float, symbol_info: dict, atr: float = 0.0) -> float:
         acct = await self._client.account_info()
         
-        if confidence >= CONFIDENCE_HIGH_THRESHOLD: risk_pct = RISK_HIGH_CONFIDENCE
-        elif confidence >= CONFIDENCE_MED_THRESHOLD: risk_pct = RISK_MED_CONFIDENCE
-        else: risk_pct = RISK_LOW_CONFIDENCE
+        if CAPITAL_ALLOCATION_PCT > 5.0:
+            # Aggressive Mode: Distribute total allocation across max trades
+            risk_pct = CAPITAL_ALLOCATION_PCT / MAX_OPEN_TRADES
+            log.debug(f"Aggressive Risk Scaling: {risk_pct}% per trade ({CAPITAL_ALLOCATION_PCT}% total)")
+        else:
+            if confidence >= CONFIDENCE_HIGH_THRESHOLD: risk_pct = RISK_HIGH_CONFIDENCE
+            elif confidence >= CONFIDENCE_MED_THRESHOLD: risk_pct = RISK_MED_CONFIDENCE
+            else: risk_pct = RISK_LOW_CONFIDENCE
 
         risk_amount = acct.free_margin * (risk_pct / 100)
         
@@ -201,11 +206,16 @@ class RiskManager:
         
         lot_raw = risk_amount / ((price_dist / tick_size) * pip_value)
 
-        # [ASSET SPECIFIC LOT CAPS]: Limit Indices and Gold more strictly
+        # [ASSET SPECIFIC LOT CAPS]: Relaxed for Aggressive Mode
         is_index_or_gold = any(x in symbol.upper() for x in ["US30", "US100", "NAS100", "XAU", "GOLD"])
         
-        asset_cap = 0.5 if is_index_or_gold else 2.0
-        final_cap = min(MAX_LOT_CAP, asset_cap)
+        if CAPITAL_ALLOCATION_PCT > 5.0:
+            # Scale caps for the 10M experimental account
+            asset_cap = 100.0 if is_index_or_gold else 500.0
+            final_cap = asset_cap
+        else:
+            asset_cap = 0.5 if is_index_or_gold else 2.0
+            final_cap = min(MAX_LOT_CAP, asset_cap)
         
         lot_raw = min(lot_raw, final_cap)
         

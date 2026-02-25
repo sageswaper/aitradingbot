@@ -171,7 +171,7 @@ class TrendMeanReversionStrategy:
         ai_conf = ai_signal.get("confidence_score", 0.0)
         ai_sig = ai_signal.get("signal", "HOLD")
         
-        if SCALPING_MODE and ai_conf >= 0.85 and ai_sig in ("BUY", "SELL"):
+        if SCALPING_MODE and ai_conf >= 0.40 and ai_sig in ("BUY", "SELL"):
             return TradeDecision(ai_sig, ai_signal.get("reasoning", ""), ai_conf,
                                  ai_signal.get("entry_params", {}).get("suggested_price", current_price),
                                  ai_signal.get("entry_params", {}).get("stop_loss", 0.0),

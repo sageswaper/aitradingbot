@@ -46,6 +46,7 @@ cp .env.example .env
 ```
 
 Minimum required settings in `.env`:
+
 ```env
 MT5_LOGIN=12345678
 MT5_PASSWORD=your_password
@@ -62,6 +63,7 @@ python main.py
 ```
 
 Watch `logs/bot.log` and confirm the bot:
+
 - Connects to MT5 ✅
 - Sends heartbeats every 10s ✅
 - Generates a Market Situation Report at each M15 close ✅
@@ -141,22 +143,57 @@ Open with any SQLite viewer (e.g. DB Browser for SQLite).
 
 ---
 
-## Supported LLM Providers
+---
 
-| Provider | Model (`config.py`) | Key Env Var |
-|----------|---------------------|-------------|
-| OpenAI | `gpt-4o` | `OPENAI_API_KEY` |
-| Anthropic | `claude-3-5-sonnet-20241022` | `ANTHROPIC_API_KEY` |
-| Google | `gemini-1.5-pro` | `GEMINI_API_KEY` |
+## 🚀 Hyper-Aggressive Testing Mode (Experimental)
+
+The bot now supports a "Hyper-Aggressive" mode designed for high-frequency testing on large capital accounts ($10M+).
+
+### Key Features
+
+- **80% Capital Allocation**: Distributes 80% of available equity across the `MAX_OPEN_TRADES` (default 50).
+- **Multi-Model Voting**: Uses an ensemble of LLMs to vote on signals. `AI_VOTING_ENABLED=True`.
+- **Deep technical post-mortems**: Generates 25,600 token technical reports in Arabic for every closed trade.
+- **Auto-Message Splitting**: Telegram reports are automatically split if they exceed the 4,096 character limit.
+
+### Configuration
+
+```python
+# config.py
+MAX_OPEN_TRADES = 50
+CAPITAL_ALLOCATION_PCT = 80.0
+AI_VOTING_ENABLED = True
+POST_MORTEM_MAX_TOKENS = 25600
+AI_THROTTLE_SECONDS = 0.5 # High-speed scanning
+```
 
 ---
 
-## Graceful Shutdown
+## 🛠️ Monitoring & Utilities
 
-Press `Ctrl+C` — the bot will:
-1. Cancel all async tasks cleanly
-2. Disconnect from MT5
-3. Close the aiohttp session
+### 1. Progress Tracker
+
+Check the status of the 50-trade milestone:
+
+```bash
+python check_progress.py
+```
+
+### 2. SL/TP Monitor
+
+Watch real-time trailing stop updates:
+
+```bash
+python monitor_sl.py
+```
+
+---
+
+## 🩹 Institutional-Grade Fixes
+
+- **Timezone-Resilient Tracking**: Uses raw UNIX timestamps for history queries to bypass MT5/Local system clock mismatches.
+- **Symbol Name Normalization**: Hand-corrected symbol lists for Admirals/IC-Markets terminal differences.
+- **Global Exception Shield**: `multi_main.py` now survives terminal-level symbol initialization errors without crashing.
 
 ---
 

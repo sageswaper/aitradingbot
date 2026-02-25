@@ -52,7 +52,7 @@ CORE TRADING RULES:
 1. Liquidity Hunt: Identify where retail stops are resting (Liquidity Pools).
 2. Fair Value Gap (FVG): Prioritize entries that fill price imbalances.
 3. Order Blocks (OB): Only trade from institutional supply/demand zones.
-4. Logic First: If the price structure is messy, do NOT force a trade.
+55: 4. Logic First: If the price structure is messy, do NOT force a trade.
 
 JSON Schema:
 {
@@ -266,29 +266,61 @@ class AIBrain:
             "ensemble_meta": results
         }
 
-    async def analyze_trade_outcome(self, trade_data: dict) -> str:
+    async def analyze_trade_outcome(self, trade_data: dict, comprehensive: bool = False) -> str:
         """
-        Ensemble analysis of a finished trade to explain success/failure.
-        trade_data: {symbol, profit, entry_price, close_price, type}
+        AI analysis of a finished trade to explain success/failure.
+        trade_data: {symbol, profit, entry_price, close_price, type, entry_reasoning, history_deals}
         """
-        status = "SUCCESS" if trade_data['profit'] >= 0 else "FAILURE"
-        prompt = f"""
-        Analyze this finished trade:
-        Symbol: {trade_data['symbol']}
-        Type: {trade_data['type']}
-        Outcome: {status} ({trade_data['profit']:.2f} USD)
-        Entry: {trade_data['entry_price']}
-        Exit: {trade_data['close_price']}
+        from config import POST_MORTEM_MAX_TOKENS
         
-        Explain in ONE SHORT ARABIC SENTENCE why this happened based on technical logic.
-        Be a professional quant analyst. 
-        """
+        status = "نجاح (SUCCESS)" if trade_data['profit'] >= 0 else "فشل (FAILURE)"
         
-        log.info("Starting AI Post-Mortem", symbol=trade_data['symbol'], pnl=trade_data['profit'])
+        if not comprehensive:
+            prompt = f"""
+            Analyze this finished trade:
+            Symbol: {trade_data['symbol']}
+            Type: {trade_data['type']}
+            Outcome: {status} ({trade_data['profit']:.2f} USD)
+            Entry Reasoning: {trade_data.get('entry_reasoning', 'N/A')}
+            
+            Explain in ONE SHORT ARABIC SENTENCE why this happened based on technical logic.
+            """
+            max_tokens = 512
+        else:
+            prompt = f"""
+            أنت محلل تقني كوانت (Quant Analyst) محترف. قم بإجراء تحليل شامل وعميق لهذه الصفقة المغلقة:
+            
+            الرمز: {trade_data['symbol']}
+            النوع: {trade_data['type']}
+            الربح/الخسارة: {trade_data['profit']:.2f} USD ({status})
+            سعر الدخول: {trade_data['entry_price']}
+            سعر الإغلاق: {trade_data['close_price']}
+            السبب الأصلي للدخول: {trade_data.get('entry_reasoning', 'N/A')}
+            
+            المطلوب تقرير فني مفصل باللغة العربية يتضمن:
+            1. تحليل حركة السعر (Price Action) التي أدت لهذه النتيجة.
+            2. تقييم دقة الـ AI في توقع الاتجاه.
+            3. دروس مستفادة لتحسين الاستراتيجية (SMC/ICT).
+            4. تحليل مستويات الـ Liquidity والـ FVG التي تأثرت بها الصفقة.
+            
+            اجعل التقرير احترافياً جداً ومطولاً (Deep Analysis).
+            """
+            max_tokens = POST_MORTEM_MAX_TOKENS
+
+        log.info("Starting AI Post-Mortem", symbol=trade_data['symbol'], pnl=trade_data['profit'], comprehensive=comprehensive)
         try:
-            # Use top model for high-quality post-mortem
-            raw = await self._call_openai(prompt, model_override=OPENAI_MODELS[0])
-            return raw.strip()
+            # Use top model for post-mortem
+            client = self._get_openai_client()
+            response = await client.chat.completions.create(
+                model=OPENAI_MODELS[0],
+                messages=[
+                    {"role": "system", "content": "You are a professional SMC/ICT Quant Analyst. You speak Arabic fluently and technically."},
+                    {"role": "user",   "content": prompt},
+                ],
+                max_tokens=max_tokens,
+                temperature=0.3,
+            )
+            return response.choices[0].message.content or "تعذر الحصول على تحليل."
         except Exception as e:
             log.warning("AI Post-Mortem failed", error=str(e))
             return "تحليل فني سريع: تم إغلاق الصفقة وفقاً لإحصائيات السوق وتحركات السعر الحالية."

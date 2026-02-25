@@ -67,14 +67,17 @@ class MultiTimeframeBot:
         log.info("Multi-bot starting", symbols=self.symbols, timeframes=self.timeframes, dry_run=DRY_RUN)
         
         # API Rate Limit Survival Strategy: Watchlist Trimming Directive
+        from config import AI_THROTTLE_SECONDS
         total_cycles = len(self.symbols) * len(self.timeframes)
-        if total_cycles > 60:
+        sweep_time_min = (total_cycles * AI_THROTTLE_SECONDS) / 60
+        
+        if sweep_time_min > 4.0: # Close to 5m timeframe limit
             print("\n" + "!" * 60)
-            print(f"CRITICAL WARNING: Total Cycles ({total_cycles}) > 60.")
-            print(f"With a 5s AI throttle, one sweep takes ~{round((total_cycles*5)/60, 1)} minutes.")
-            print("To stay within the M5 window, please reduce SYMBOLS to < 15.")
+            print(f"CRITICAL WARNING: Total Cycles ({total_cycles})")
+            print(f"With a {AI_THROTTLE_SECONDS}s AI throttle, one sweep takes ~{round(sweep_time_min, 1)} minutes.")
+            print("If this exceeds 5.0 minutes, you will lag behind M5 candles.")
             print("!" * 60 + "\n")
-            log.warning("System will lag behind M5 candles due to high cycle count.")
+            log.warning("High cycle count detected: Potential timeframe lag.", sweep_time_min=sweep_time_min)
 
         await self.db.initialize()
         await self.client.connect()
@@ -228,26 +231,9 @@ class MultiTimeframeBot:
                     "rules": strat.__doc__ or "Standard hybrid technical rules."
                 }
                 
-                # Market Session Check: Skip if market is closed for trading
-                import MetaTrader5 as mt5
-                trading_info = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: mt5.symbol_info_session_trade(symbol, datetime.now().weekday())
-                )
+                # Market Session & Spread Check is already integrated in DataManager.get_ohlc
+                # and RiskManager.check_spread_health.
                 
-                # Check if current time is within any of today's trading sessions
-                # Note: This is an extra safety layer before AI tokens are spent
-                is_open = False
-                if trading_info:
-                    now_min = datetime.now().hour * 60 + datetime.now().minute
-                    for session in trading_info:
-                        if now_min >= session[0] and now_min <= session[1]:
-                            is_open = True
-                            break
-                
-                if not is_open:
-                    log.info(f"[{symbol}][{tf}] Market Session: CLOSED | Skipping analysis")
-                    return
-
                 ai_start = time.perf_counter()
                 ai_response = await self.ai.analyze(report, strategy_metadata=strat_meta)
                 ai_latency_ms = round((time.perf_counter() - ai_start) * 1000, 1)
@@ -399,6 +385,7 @@ class MultiTimeframeBot:
 
     async def _trailing_stop_loop(self) -> None:
         """Runs every 10s to manage profitable trailing stops."""
+        log.info("Trailing stop loop started")
         while self._running:
             await asyncio.sleep(10)
             if self._halt: continue
@@ -419,6 +406,7 @@ class MultiTimeframeBot:
         Professional Monitoring: Uses history_deals_get to monitor closures.
         Detects SL, TP, and manual exits with exact reason reporting.
         """
+        log.info("Position sync loop started")
         while self._running:
             await asyncio.sleep(20) # Check every 20s
             try:
@@ -428,7 +416,7 @@ class MultiTimeframeBot:
                 start_from = current_time - timedelta(minutes=7)
                 
                 deals = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: mt5.history_deals_get(start_from, current_time)
+                    None, lambda: mt5.history_deals_get(date_from=start_from, date_to=current_time)
                 )
                 
                 if deals is None: continue
@@ -497,6 +485,9 @@ async def main() -> None:
         log.info("KeyboardInterrupt")
     except MT5ConnectionError as e:
         log.critical(f"MT5 Connection Error: {str(e)}")
+        sys.exit(1)
+    except Exception as e:
+        log.critical(f"UNHANDLED FATAL EXCEPTION: {str(e)}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":
