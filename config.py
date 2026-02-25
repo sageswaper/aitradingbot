@@ -40,8 +40,10 @@ SCALPING_MODE: bool = os.getenv("SCALPING_MODE", "false").lower() in ("true", "1
 # ──────────────────────────────────────────────
 MAGIC_NUMBER: int = 20260224
 TRADE_COOLDOWN_MINUTES: int = 5
+MAX_SPREAD_RATIO: float = float(os.getenv("MAX_SPREAD_RATIO", "2.0")) # Veto if spread > 2x average
 MAX_DRAWDOWN_PCT: float = float(os.getenv("MAX_DRAWDOWN_PCT", "5.0"))   # % of initial bal
 MAX_OPEN_TRADES: int = int(os.getenv("MAX_OPEN_TRADES", "3"))
+MAX_LOT_CAP: float = float(os.getenv("MAX_LOT_CAP", "2.0"))   # Maximum lots allowed per trade
 RISK_HIGH_CONFIDENCE: float = float(os.getenv("RISK_HIGH_CONF", "1.0"))  # % of free margin
 RISK_MED_CONFIDENCE: float = float(os.getenv("RISK_MED_CONF", "0.5"))
 RISK_LOW_CONFIDENCE: float = float(os.getenv("RISK_LOW_CONF", "0.2"))

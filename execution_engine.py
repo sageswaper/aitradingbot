@@ -518,21 +518,45 @@ class ExecutionEngine:
         min_dist = max(min_dist_fixed, spread + (10 * point))
 
         if signal == "BUY":
+            # RESCUE PLAN: ATR Fallback for 0.0 SL/TP
+            # If AI sent 0.0, use ATR * 1.5 as fallback
+            atr_val = entry_params.get("atr", 0.0)
+            if sl <= 0 and atr_val > 0:
+                sl = bid - (atr_val * 1.5)
+                log.info(f"ATR Fallback: BUY SL set for {symbol}", sl=round(sl, digits))
+            if tp <= 0 and atr_val > 0:
+                tp = ask + (atr_val * 3.0) # 1:2 RR fallback
+                log.info(f"ATR Fallback: BUY TP set for {symbol}", tp=round(tp, digits))
+
             # Check against Bid for SL, Ask for TP
             if sl > 0 and (bid - sl) < min_dist:
                 sl = bid - min_dist
-                log.info(f"Adjusting BUY SL for {symbol}", original=round(float(entry_params.get('stop_loss')), digits), new=round(sl, digits))
+                log.info(f"Adjusting BUY SL for {symbol}", original=round(float(entry_params.get('stop_loss', 0)), digits), new=round(sl, digits))
             if tp > 0 and (tp - ask) < min_dist:
                 tp = ask + min_dist
-                log.info(f"Adjusting BUY TP for {symbol}", original=round(float(entry_params.get('take_profit')), digits), new=round(tp, digits))
+                log.info(f"Adjusting BUY TP for {symbol}", original=round(float(entry_params.get('take_profit', 0)), digits), new=round(tp, digits))
         else: # SELL
+            # RESCUE PLAN: ATR Fallback for 0.0 SL/TP
+            atr_val = entry_params.get("atr", 0.0)
+            if sl <= 0 and atr_val > 0:
+                sl = ask + (atr_val * 1.5)
+                log.info(f"ATR Fallback: SELL SL set for {symbol}", sl=round(sl, digits))
+            if tp <= 0 and atr_val > 0:
+                tp = bid - (atr_val * 3.0)
+                log.info(f"ATR Fallback: SELL TP set for {symbol}", tp=round(tp, digits))
+
             # Check against Ask for SL, Bid for TP
             if sl > 0 and (sl - ask) < min_dist:
                 sl = ask + min_dist
-                log.info(f"Adjusting SELL SL for {symbol}", original=round(float(entry_params.get('stop_loss')), digits), new=round(sl, digits))
+                log.info(f"Adjusting SELL SL for {symbol}", original=round(float(entry_params.get('stop_loss', 0)), digits), new=round(sl, digits))
             if tp > 0 and (bid - tp) < min_dist:
                 tp = bid - min_dist
-                log.info(f"Adjusting SELL TP for {symbol}", original=round(float(entry_params.get('take_profit')), digits), new=round(tp, digits))
+                log.info(f"Adjusting SELL TP for {symbol}", original=round(float(entry_params.get('take_profit', 0)), digits), new=round(tp, digits))
+
+        # FINAL SAFETY: If still 0 and ATR failed, use a fixed point-based stop
+        if sl <= 0:
+            sl = (bid - 500*point) if signal == "BUY" else (ask + 500*point)
+            log.warning(f"CRITICAL FALLBACK: Fixed 500pt SL for {symbol}")
 
 
         sl = round(sl, digits)
@@ -663,4 +687,82 @@ class ExecutionEngine:
             log.warning(msg)
             if rc != 10004: # Ignore "Requote" to avoid spam
                 await TelegramNotifier.notify_error(msg)
+
+
+    async def handle_external_closure(self, ticket: int, symbol: str, volume: float) -> Optional[float]:
+        """
+        Handles post-trade analysis for positions closed externally (SL, TP, etc).
+        1. Fetches real execution data from MT5 history.
+        2. Calls AI Post-Mortem.
+        3. Updates DB and notifies Telegram.
+        """
+        import MetaTrader5 as mt5
+        from database import AuditDB
+        from telegram_notifier import TelegramNotifier
+        
+        db = AuditDB()
+        
+        # 1. Fetch History Deal
+        await asyncio.sleep(0.5) # Wait for terminal to sync
+        history = await asyncio.get_event_loop().run_in_executor(
+            None, lambda: mt5.history_deals_get(position=ticket)
+        )
+        
+        if not history:
+            log.warning(f"No history found for ticket {ticket}")
+            return None
+            
+        # Find the exit deal
+        exit_deal = None
+        entry_price = 0.0
+        for deal in history:
+            if deal.entry == mt5.DEAL_ENTRY_IN:
+                entry_price = deal.price
+            if deal.entry == mt5.DEAL_ENTRY_OUT:
+                exit_deal = deal
+                
+        if not exit_deal:
+            log.warning(f"No exit deal found for ticket {ticket}")
+            return None
+            
+        profit = exit_deal.profit + exit_deal.commission + exit_deal.swap
+        close_price = exit_deal.price
+        
+        # Reason mapping
+        REASON_MAP = {
+            mt5.DEAL_REASON_SL: "ضرب الـ Stop Loss 🛑",
+            mt5.DEAL_REASON_TP: "ضرب الـ Take Profit 🎯",
+            mt5.DEAL_REASON_CLIENT: "إغلاق يدوي من المستثمر 👤",
+            mt5.DEAL_REASON_EXPERT: "إغلاق من الخبير (الأتمتة) 🤖",
+            mt5.DEAL_REASON_SO: "Stop Out (تصفية حرجة) ⚠️"
+        }
+        reason_text = REASON_MAP.get(exit_deal.reason, f"إغلاق برمز ({exit_deal.reason})")
+        
+        # 2. AI Post-Mortem
+        try:
+            trade_data = {
+                "symbol": symbol,
+                "profit": profit,
+                "entry_price": entry_price,
+                "close_price": close_price,
+                "type": "BUY" if exit_deal.type == mt5.ORDER_TYPE_SELL else "SELL"
+            }
+            ai_explanation = await self.brain.analyze_trade_outcome(trade_data)
+        except Exception as e:
+            ai_explanation = "تحليل فني سريع: تم إغلاق الصفقة وفقاً لإحصائيات السوق."
+            
+        # 3. Update DB & Notify
+        await db.record_trade_close(ticket, close_price, profit)
+        await TelegramNotifier.notify_trade_close(
+            symbol=symbol,
+            ticket=ticket,
+            profit=profit,
+            detail=reason_text,
+            lot=exit_deal.volume,
+            entry_price=entry_price,
+            close_price=close_price,
+            ai_explanation=ai_explanation
+        )
+        
+        return exit_deal.time
 

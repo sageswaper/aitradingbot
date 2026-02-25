@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS analysis_log (
     lot_size        REAL,
     was_traded      INTEGER DEFAULT 0,
     latency_ms      REAL,
-    dry_run         INTEGER DEFAULT 0
+    dry_run         INTEGER DEFAULT 0,
+    ensemble_meta   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -107,8 +108,8 @@ class AuditDB:
                   (ts, symbol, timeframe, market_report,
                    ai_raw_response, ai_signal, ai_confidence, ai_risk,
                    ai_reasoning, strategy_signal, lot_size, was_traded,
-                   latency_ms, dry_run)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   latency_ms, dry_run, ensemble_meta)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     ts, symbol, timeframe, market_report,
@@ -122,6 +123,7 @@ class AuditDB:
                     int(was_traded),
                     latency_ms,
                     int(dry_run),
+                    json.dumps(ai_response.get("ensemble_meta", []))
                 ),
             )
             await db.commit()

@@ -58,6 +58,7 @@ class MultiTimeframeBot:
         # RACE CONDITION GUARD: One analysis/execution per symbol at a time
         self._symbol_locks = {s: asyncio.Lock() for s in symbols}
         self._active_tickets: set[int] = set()
+        self._spread_track = {} # symbol_tf -> [spreads]
 
 
     async def start(self) -> None:
@@ -224,14 +225,37 @@ class MultiTimeframeBot:
                     "rules": strat.__doc__ or "Standard hybrid technical rules."
                 }
                 
-                # RESCUE PLAN: Increased jitter (0-20s) to distribute AI requests
-                import random
-                jitter = random.uniform(0, 20)
-                await asyncio.sleep(jitter)
+                # Market Session Check: Skip if market is closed for trading
+                import MetaTrader5 as mt5
+                trading_info = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: mt5.symbol_info_session_trade(symbol, datetime.now().weekday())
+                )
+                
+                # Check if current time is within any of today's trading sessions
+                # Note: This is an extra safety layer before AI tokens are spent
+                is_open = False
+                if trading_info:
+                    now_min = datetime.now().hour * 60 + datetime.now().minute
+                    for session in trading_info:
+                        if now_min >= session[0] and now_min <= session[1]:
+                            is_open = True
+                            break
+                
+                if not is_open:
+                    log.info(f"[{symbol}][{tf}] Market Session: CLOSED | Skipping analysis")
+                    return
 
                 ai_start = time.perf_counter()
                 ai_response = await self.ai.analyze(report, strategy_metadata=strat_meta)
                 ai_latency_ms = round((time.perf_counter() - ai_start) * 1000, 1)
+
+                # Spread Health Statistics
+                current_spread = ask - bid
+                key = f"{symbol}_{tf}"
+                if key not in self._spread_track: self._spread_track[key] = []
+                self._spread_track[key].append(current_spread)
+                if len(self._spread_track[key]) > 20: self._spread_track[key].pop(0) # 20 period moving avg
+                avg_spread = sum(self._spread_track[key]) / len(self._spread_track[key])
 
             # 4. Strategy Final Decision
             decision = self.strategy.evaluate(df, ai_response, current_price, symbol=symbol)
@@ -285,6 +309,14 @@ class MultiTimeframeBot:
 
                 try:
                     await self.risk.check_all(symbol, decision.signal, decision.confidence)
+                    
+                    # Spread Health Check (Phase 4)
+                    current_spread = ask - bid
+                    key = f"{symbol}_{tf}"
+                    track = self._spread_track.get(key, [])
+                    avg_spread = sum(track) / len(track) if track else 0.0
+                    await self.risk.check_spread_health(symbol, current_spread, avg_spread)
+
                     si = await self.data.get_symbol_info_for_risk(symbol)
                     ai_conf = ai_response.get("confidence_score", 0.0)
                     atr = float(df["atr"].iloc[-1])
@@ -307,6 +339,7 @@ class MultiTimeframeBot:
                             "suggested_price": final_entry_price,
                             "stop_loss": decision.stop_loss,
                             "take_profit": decision.take_profit,
+                            "atr": atr,
                             "reasoning": decision.reason,
                             "votes": ai_response.get("votes")
                         }
@@ -318,9 +351,14 @@ class MultiTimeframeBot:
                         )
                         was_traded = order_result.get("success", False)
 
-                except HaltTradingError:
+                except HaltTradingError as e:
+                    log.critical(f"Halt triggered: {str(e)}")
+                    # ACTIVATE KILL-SWITCH: Close all bleeding positions
+                    try:
+                        await self.risk.emergency_close_all(self.executor)
+                    except Exception as ex:
+                        log.error(f"Kill-switch execution failed: {ex}")
                     self._halt = True
-                    log.critical("Halt triggered")
                 except RiskVetoError as e:
                     log.warning(f"[{symbol}][{tf}] Risk veto: {str(e)}")
                 except Exception as e:
@@ -364,45 +402,57 @@ class MultiTimeframeBot:
                     log.error(f"Trailing stop error for {symbol}", error=str(e))
 
     async def _position_sync_loop(self) -> None:
-        """Detects trades closed by TP, SL, or manual intervention."""
+        """
+        Professional Monitoring: Uses history_deals_get to monitor closures.
+        Detects SL, TP, and manual exits with exact reason reporting.
+        """
         while self._running:
-            await asyncio.sleep(15) # Check every 15s
+            await asyncio.sleep(20) # Check every 20s
             try:
                 import MetaTrader5 as mt5
+                current_time = datetime.now()
+                # Check history for the last 5 minutes (plus overlap for safety)
+                start_from = current_time - timedelta(minutes=7)
+                
+                deals = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: mt5.history_deals_get(start_from, current_time)
+                )
+                
+                if deals is None: continue
+                
+                # We only care about DEAL_ENTRY_OUT (exit deals)
+                for d in deals:
+                    if d.entry == mt5.DEAL_ENTRY_OUT and d.position_id in self._active_tickets:
+                        ticket = d.position_id
+                        symbol = d.symbol
+                        vol = d.volume
+                        
+                        log.info(f"Sync confirmed closure of position {ticket} via history", symbol=symbol, reason=d.reason)
+                        
+                        # Trigger automated post-mortem and notifications
+                        close_time = await self.executor.handle_external_closure(ticket, symbol, vol)
+                        
+                        if symbol in self.symbols:
+                            self._last_closed_trades[symbol] = close_time or time.time()
+                        
+                        if ticket in self._active_tickets:
+                            self._active_tickets.remove(ticket)
+
+                # Re-sync current status just in case
                 current_pos = await self.client.get_open_positions()
                 current_tickets = {p.ticket for p in current_pos}
+                
+                # Check for "Phantom Tickets" (disappeared but not in 7min history)
+                ghosts = self._active_tickets - current_tickets
+                for g in ghosts:
+                    log.warning(f"Position {g} disappeared without history record. Possibly older closure. Forcing sweep.")
+                    await self.executor.handle_external_closure(g, "UNKNOWN", 0.0)
+                    self._active_tickets.remove(g)
 
-                # Find tickets that disappeared
-                closed_tickets = self._active_tickets - current_tickets
-                for ticket in closed_tickets:
-                    # Find which symbol this was (history can help)
-                    from datetime import datetime, timedelta
-                    end = datetime.now()
-                    start = end - timedelta(minutes=60)
-                    deals = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: mt5.history_deals_get(start, end)
-                    )
-                    
-                    symbol = "UNKNOWN"
-                    vol = 0.0
-                    if deals:
-                        for d in deals:
-                            if d.position_id == ticket:
-                                symbol = d.symbol
-                                vol = d.volume
-                                break
-                    
-                    log.info(f"Detected auto-closure of ticket {ticket}", symbol=symbol)
-                    # Use a specialized close reporter that handles the AI post-mortem
-                    close_time = await self.executor.handle_external_closure(ticket, symbol, vol)
-                    if symbol != "UNKNOWN":
-                        self._last_closed_trades[symbol] = close_time or time.time()
-                    self._active_tickets.remove(ticket)
-
-                # Re-sync in case of external opens (rare) or missed updates
                 self._active_tickets = current_tickets
+                
             except Exception as e:
-                log.error(f"Sync loop error: {str(e)}")
+                log.error(f"Sync loop error: {str(e)}", exc_info=True)
 
 def _install_shutdown_handler(bot: MultiTimeframeBot, loop: asyncio.AbstractEventLoop) -> None:
     def _handler():

@@ -17,6 +17,7 @@ from typing import Any, Optional
 
 import google.generativeai as genai
 import aiohttp
+from aiolimiter import AsyncLimiter
 
 from openai import AsyncOpenAI
 from config import (
@@ -44,23 +45,27 @@ HOLD_FALLBACK: dict = {
     "risk_assessment": "High",
 }
 
-SYSTEM_PROMPT = """You are a high-frequency quant breakout specialist. 
+SYSTEM_PROMPT = """You are a master Smart Money Concepts (SMC) & ICT specialist. 
 Your ONLY output must be a single valid JSON object. 
-Latency is critical — be concise.
+
+CORE TRADING RULES:
+1. Liquidity Hunt: Identify where retail stops are resting (Liquidity Pools).
+2. Fair Value Gap (FVG): Prioritize entries that fill price imbalances.
+3. Order Blocks (OB): Only trade from institutional supply/demand zones.
+4. Logic First: If the price structure is messy, do NOT force a trade.
 
 JSON Schema:
 {
   "signal": "BUY" | "SELL" | "HOLD" | "EXIT",
-  "reasoning": "<short technical justification, max 10 words>",
+  "reasoning": "<short SMC-based justification, max 10 words>",
   "entry_params": {"suggested_price": float, "stop_loss": float, "take_profit": float},
   "confidence_score": float (0-1),
   "risk_assessment": "High" | "Medium" | "Low"
 }
 
 Strategic Bias:
-1. FOCUS on BREAKOUTS: Respond quickly to price structure violations.
-2. EXIT STRATEGY: Use "EXIT" if the current trend has exhausted or risk is unacceptable.
-3. BE AGGRESSIVE: Default to BUY/SELL on edge; avoid HOLD.
+1. FOCUS on DISPLACEMENT: Look for strong moves leaving FVGs behind.
+2. EXIT STRATEGY: Use "EXIT" if price hits a major liquidity draw or reverses trend.
 3. STRICT JSON: NO prose, NO markdown.
 """
 
@@ -91,6 +96,8 @@ class AIBrain:
         self._session: Optional[aiohttp.ClientSession] = None
         from config import MAX_CONCURRENT_AI_CALLS, LLM_PROVIDER
         self._semaphore = asyncio.Semaphore(MAX_CONCURRENT_AI_CALLS)
+        # Accurate Rate Limiting: 2 requests per 5 seconds (adjustable)
+        self._limiter = AsyncLimiter(2, 5)
         log.info("AIBrain initialized", provider=LLM_PROVIDER, concurrent_lanes=MAX_CONCURRENT_AI_CALLS)
 
     def _get_openai_client(self) -> AsyncOpenAI:
@@ -139,14 +146,11 @@ class AIBrain:
         for attempt in range(1, LLM_MAX_RETRIES + 1):
             async with self._semaphore:
                 try:
-                    t0 = time.perf_counter()
-                    raw = await self._call_provider(user_message)
-                    latency = round((time.perf_counter() - t0) * 1000, 1)
-                    
-                    # MANDATORY REFILL COOLDOWN: 5s after every AI call (strictly enforced)
-                    await asyncio.sleep(5.0)
-
-
+                    async with self._limiter:
+                        t0 = time.perf_counter()
+                        raw = await self._call_provider(user_message)
+                        latency = round((time.perf_counter() - t0) * 1000, 1)
+                        
                     parsed = self._parse_response(raw)
                     self._consecutive_failures = 0
                     log.info("AI analysis complete", symbol=market_report.split("|")[0][:10], signal=parsed.get("signal"), latency_ms=latency)
@@ -181,15 +185,10 @@ class AIBrain:
             backoff_schedule = [10, 20, 60]
             for attempt in range(1, 3): # 2 attempts per model in ensemble
                 try:
-                    # Staggered start delay
-                    await asyncio.sleep(2.0) 
-                    raw = await self._call_openai(user_message, model_override=model)
-                    parsed = self._parse_response(raw)
-                    parsed["model"] = model
-                    
-                    # STARK THROTTLE FOR ENSEMBLE: 5s to avoid chain-reaction rate limits
-                    await asyncio.sleep(5.0)
-
+                    async with self._limiter:
+                        raw = await self._call_openai(user_message, model_override=model)
+                        parsed = self._parse_response(raw)
+                        parsed["model"] = model
                     
                     return parsed
                 except Exception as e:
@@ -263,7 +262,8 @@ class AIBrain:
             "entry_params": results[0].get("entry_params", HOLD_FALLBACK["entry_params"]) if final_signal != "HOLD" else HOLD_FALLBACK["entry_params"],
             "confidence_score": avg_conf,
             "risk_assessment": results[0].get("risk_assessment", "High"),
-            "votes": votes
+            "votes": votes,
+            "ensemble_meta": results
         }
 
     async def analyze_trade_outcome(self, trade_data: dict) -> str:
@@ -441,5 +441,16 @@ class AIBrain:
             )
             parsed["signal"] = "HOLD"
             parsed["reasoning"] += f" [Overridden to HOLD: confidence {confidence} < {MIN_CONFIDENCE_TO_TRADE}]"
+
+        # Logic Validator: Scan for contradictions
+        negative_keywords = ["dead volume", "invalid", "rejection", "risk too high", "failing", "neutral", "weakness"]
+        reasoning_lower = parsed.get("reasoning", "").lower()
+        if parsed["signal"] in ("BUY", "SELL"):
+            for word in negative_keywords:
+                if word in reasoning_lower:
+                    log.warning(f"CONTRADICTION DETECTED: AI said {parsed['signal']} but reasoning contained '{word}'. Overriding to HOLD.")
+                    parsed["signal"] = "HOLD"
+                    parsed["reasoning"] = f"[LOGIC VETO: {word}] " + parsed["reasoning"]
+                    break
 
         return parsed
