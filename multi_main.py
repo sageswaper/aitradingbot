@@ -23,6 +23,7 @@ from risk_manager import RiskManager, HaltTradingError, RiskVetoError
 from execution_engine import ExecutionEngine
 from strategy import TrendMeanReversionStrategy
 from database import AuditDB
+from news_manager import NewsManager
 
 log = get_logger("multi_main")
 
@@ -48,7 +49,8 @@ class MultiTimeframeBot:
         self.client     = MT5Client()
         self.data       = DataManager(self.client)
         self.ai         = AIBrain()
-        self.risk       = RiskManager(self.client)
+        self.news       = NewsManager()
+        self.risk       = RiskManager(self.client, news_manager=self.news)
         self.executor   = ExecutionEngine(self.client, brain=self.ai)
         self.strategy   = TrendMeanReversionStrategy()
         self.db         = AuditDB()
@@ -59,6 +61,8 @@ class MultiTimeframeBot:
         self._symbol_locks = {s: asyncio.Lock() for s in symbols}
         self._active_tickets: set[int] = set()
         self._spread_track = {} # symbol_tf -> [spreads]
+        # 🚨 LOCAL TRADE REGISTRY (Anti-Ghost Double-Entry) 🚨
+        self._in_flight_registry: dict[str, float] = {} # symbol -> last_entry_timestamp
 
 
     async def start(self) -> None:
@@ -97,6 +101,7 @@ class MultiTimeframeBot:
         self.tasks.append(asyncio.create_task(self._hard_stop_monitor(), name="hard_stop_monitor"))
         self.tasks.append(asyncio.create_task(self._trailing_stop_loop(), name="trailing_stop_loop"))
         self.tasks.append(asyncio.create_task(self._position_sync_loop(), name="position_sync_loop"))
+        self.tasks.append(asyncio.create_task(self._news_update_loop(), name="news_update_loop"))
 
         if DRY_RUN:
             log.warning("DRY RUN MODE ACTIVE")
@@ -297,6 +302,15 @@ class MultiTimeframeBot:
                 )
                 our_pos = [p for p in (current_positions or []) if p.magic == MAGIC_NUMBER]
                 
+                # 🚨 LOCAL REGISTRY CHECK (Anti-Ghost Double-Entry) 🚨
+                last_entry_time = self._in_flight_registry.get(symbol, 0)
+                if time.time() - last_entry_time < 30: # 30s buffer for MT5 server sync
+                    log.warning(f"GHOST ENTRY BLOCKED for {symbol}. Local registry shows trade opened {round(time.time() - last_entry_time, 1)}s ago.")
+                    # Record cycle as skipped
+                    total_ms = round(time.perf_counter() - cycle_start) * 1000, 1
+                    await self.db.record_cycle(symbol, tf, report, ai_response, "SKIP (In-Flight)", 0.0, False, total_ms, DRY_RUN)
+                    return
+
                 if our_pos:
                     log.debug(f"Position already exists for {symbol}. Skipping new {decision.signal} entry.")
                     # Still record cycle but don't place order
@@ -350,6 +364,9 @@ class MultiTimeframeBot:
                             lot_size, comment=f"AIBot_{tf}"
                         )
                         was_traded = order_result.get("success", False)
+                        if was_traded:
+                            self._in_flight_registry[symbol] = time.time()
+                            log.info(f"🚨 LOCAL REGISTRY UPDATED for {symbol} at {self._in_flight_registry[symbol]}")
 
                 except HaltTradingError as e:
                     log.critical(f"Halt triggered: {str(e)}")
@@ -453,6 +470,16 @@ class MultiTimeframeBot:
                 
             except Exception as e:
                 log.error(f"Sync loop error: {str(e)}", exc_info=True)
+
+    async def _news_update_loop(self) -> None:
+        """Background task to keep news calendar fresh."""
+        log.info("News update loop started")
+        while self._running:
+            try:
+                await self.news.update_calendar()
+            except Exception as e:
+                log.error(f"News update failed: {e}")
+            await asyncio.sleep(3600) # Update hourly
 
 def _install_shutdown_handler(bot: MultiTimeframeBot, loop: asyncio.AbstractEventLoop) -> None:
     def _handler():

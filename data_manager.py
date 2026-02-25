@@ -55,6 +55,25 @@ class DataManager:
             None, self._fetch_rates_sync, symbol, tf_const, bars
         )
         df = self._clean_ohlc(df)
+
+        # 🚨 STALE DATA GUARD (Anti-Disconnect) 🚨
+        if not df.empty:
+            tick = await asyncio.get_event_loop().run_in_executor(None, mt5.symbol_info_tick, symbol)
+            if tick:
+                server_now = tick.time
+                last_candle_time = int(df.index[-1].timestamp())
+                tf_secs = 60 # Default to M1
+                for k, v in MT5_TIMEFRAME_MAP.items():
+                    if v == tf_const:
+                        from multi_main import _TIMEFRAME_SECONDS
+                        tf_secs = _TIMEFRAME_SECONDS.get(k, 60)
+                        break
+                
+                # If data is older than 1.5x the timeframe, it's stale (disconnected)
+                if (server_now - last_candle_time) > (tf_secs * 1.5):
+                    log.error(f"STALE DATA DETECTED for {symbol}: Last candle {df.index[-1]} vs Server {datetime.fromtimestamp(server_now)}")
+                    return pd.DataFrame() # Return empty to block analysis
+        
         log.debug("OHLC fetched", symbol=symbol, timeframe=timeframe, bars=len(df))
         return df
 

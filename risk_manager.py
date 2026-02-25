@@ -15,10 +15,12 @@ from config import (
     MAX_DRAWDOWN_PCT, MAX_OPEN_TRADES,
     RISK_HIGH_CONFIDENCE, RISK_MED_CONFIDENCE, RISK_LOW_CONFIDENCE,
     CONFIDENCE_HIGH_THRESHOLD, CONFIDENCE_MED_THRESHOLD,
-    CORRELATION_GROUPS
+    CORRELATION_GROUPS, DAILY_DRAWDOWN_LIMIT_PCT, MAX_LOT_CAP,
+    MAX_SPREAD_RATIO
 )
 from mt5_client import MT5Client
 from logger import get_logger
+from news_manager import NewsManager
 
 log = get_logger("risk_manager")
 
@@ -29,8 +31,9 @@ class RiskVetoError(RuntimeError):
     """Raised when a specific trade is vetoed (not a full halt)."""
 
 class RiskManager:
-    def __init__(self, client: MT5Client) -> None:
+    def __init__(self, client: MT5Client, news_manager: Optional[NewsManager] = None) -> None:
         self._client = client
+        self._news = news_manager
         self._peak_equity: Optional[float] = None
         self._daily_start_equity: Optional[float] = None
         self._last_day_checked: Optional[str] = None
@@ -41,6 +44,12 @@ class RiskManager:
         
         if signal == "HOLD" or self._nuked:
             return
+
+        # 🚨 PROACTIVE NEWS VETO (The Red-Folder Radar) 🚨
+        if self._news:
+            is_news, reason = self._news.is_blackout(symbol)
+            if is_news:
+                raise RiskVetoError(f"Proactive Veto: {reason}")
 
         await self.check_global_drawdown()
         await self.check_daily_drawdown()
@@ -95,8 +104,8 @@ class RiskManager:
         
         daily_loss_pct = (self._daily_start_equity - equity) / self._daily_start_equity * 100
         
-        if daily_loss_pct >= 2.0: # Hardcoded 2% daily limit for safety
-            msg = f"[CRITICAL] DAILY DRAWDOWN BREACH: {daily_loss_pct:.2f}% >= 2.0%"
+        if daily_loss_pct >= DAILY_DRAWDOWN_LIMIT_PCT:
+            msg = f"[CRITICAL] DAILY DRAWDOWN BREACH: {daily_loss_pct:.2f}% >= {DAILY_DRAWDOWN_LIMIT_PCT}%"
             log.critical(msg)
             await self._nuke_all_positions()
             raise HaltTradingError(msg)
@@ -144,7 +153,6 @@ class RiskManager:
             raise RiskVetoError(f"Max trades limit reached ({len(positions)})")
 
     async def check_spread_health(self, symbol: str, current_spread: float, avg_spread: float) -> None:
-        from config import MAX_SPREAD_RATIO
         if avg_spread <= 0: return
         ratio = current_spread / avg_spread
         if ratio > MAX_SPREAD_RATIO:
@@ -195,7 +203,6 @@ class RiskManager:
 
         # [ASSET SPECIFIC LOT CAPS]: Limit Indices and Gold more strictly
         is_index_or_gold = any(x in symbol.upper() for x in ["US30", "US100", "NAS100", "XAU", "GOLD"])
-        from config import MAX_LOT_CAP
         
         asset_cap = 0.5 if is_index_or_gold else 2.0
         final_cap = min(MAX_LOT_CAP, asset_cap)
