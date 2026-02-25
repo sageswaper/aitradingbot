@@ -90,11 +90,11 @@ class RiskManager:
             raise HaltTradingError(msg)
 
     async def _nuke_all_positions(self) -> None:
-        """☢️ THE CONCURRENT NUCLEAR KILL SWITCH: Paralellized GTFO logic. ☢️"""
+        """[NUCLEAR KILL SWITCH]: Paralellized GTFO logic."""
         if self._nuked: return
         self._nuked = True
         
-        log.critical("[☢️ NUKE ☢️] ACTIVATING CONCURRENT KILL SWITCH")
+        log.critical("[NUKE] ACTIVATING CONCURRENT KILL SWITCH")
         positions = await self._client.get_open_positions()
         from config import MAGIC_NUMBER
         
@@ -124,7 +124,7 @@ class RiskManager:
         if tasks:
             log.info(f"Bombarding broker with {len(tasks)} close orders...")
             await asyncio.gather(*tasks)
-            log.critical("☢️ NUCLEAR STRIKE COMPLETE: ALL POSITIONS COMMANDED TO CLOSE ☢️")
+            log.critical("NUCLEAR STRIKE COMPLETE: ALL POSITIONS COMMANDED TO CLOSE")
 
     async def check_simultaneous_trades(self, symbol: str) -> None:
         positions = await self._client.get_open_positions()
