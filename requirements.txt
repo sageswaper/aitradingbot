@@ -9,3 +9,4 @@ google-generativeai>=0.7.0
 aiosqlite>=0.20.0
 ta>=0.11.0
 aiolimiter>=1.1.0
+pytest-asyncio>=0.23.0

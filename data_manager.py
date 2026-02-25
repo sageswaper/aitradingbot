@@ -352,6 +352,8 @@ Volume Ratio: {round(cur_vol / avg_vol, 2) if avg_vol > 0 else 'N/A'}x average
     async def get_symbol_info_for_risk(self, symbol: str) -> dict:
         """Return point value and pip value for position sizing."""
         si = await self._client.symbol_info(symbol)
+        if not si:
+            raise RuntimeError(f"Could not fetch symbol info for {symbol}")
         return {
             "point": si.point,
             "digits": si.digits,
