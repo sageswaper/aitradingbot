@@ -47,10 +47,19 @@ class ExecutionEngine:
     def __init__(self, client: MT5Client, brain: Optional[AIBrain] = None) -> None:
         self._client = client
         self._brain = brain
+        # 🚨 LOCAL ENTRY CACHE (Anti-Ghost Double-Entry) 🚨
+        self._recent_entries: dict[str, float] = {} # symbol -> last_entry_time
 
     async def place_order(self, symbol: str, signal: str, entry_params: dict, lot: float, comment: str = "AIBot") -> dict:
         if DRY_RUN: return {"success": True, "ticket": 0, "detail": "DRY RUN", "dry_run": True}
         if signal not in ("BUY", "SELL"): return {"success": False, "ticket": 0, "detail": f"Invalid signal: {signal}"}
+
+        # 🚨 LOCAL REGISTRY CHECK (Secondary Defense) 🚨
+        last_entry = self._recent_entries.get(symbol, 0)
+        if time.time() - last_entry < 10: # 10s lockout as requested by user
+            msg = f"GHOST ENTRY BLOCKED: {symbol} traded {round(time.time() - last_entry, 1)}s ago. Vetoing to prevent double entry."
+            log.warning(msg)
+            return {"success": False, "ticket": 0, "detail": msg}
 
         # 1. 🚨 MAXIMUM SPREAD GUARD (Prop-Firm Safety) 🚨
         bid, ask = await self._client.get_current_price(symbol)
@@ -84,6 +93,10 @@ class ExecutionEngine:
                 ticket = result.get("order", 0)
                 if ticket == 0: await asyncio.sleep(1.0) # wait for history sync
                 
+                # Update local registry on success
+                self._recent_entries[symbol] = time.time()
+                log.info(f"🚨 LOCAL REGISTRY UPDATED for {symbol} at {self._recent_entries[symbol]}")
+
                 execution_price = result.get("price", entry_params.get("suggested_price", 0.0))
                 
                 await TelegramNotifier.notify_trade_open(

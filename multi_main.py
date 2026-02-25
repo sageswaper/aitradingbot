@@ -61,8 +61,6 @@ class MultiTimeframeBot:
         self._symbol_locks = {s: asyncio.Lock() for s in symbols}
         self._active_tickets: set[int] = set()
         self._spread_track = {} # symbol_tf -> [spreads]
-        # 🚨 LOCAL TRADE REGISTRY (Anti-Ghost Double-Entry) 🚨
-        self._in_flight_registry: dict[str, float] = {} # symbol -> last_entry_timestamp
 
 
     async def start(self) -> None:
@@ -303,11 +301,12 @@ class MultiTimeframeBot:
                 our_pos = [p for p in (current_positions or []) if p.magic == MAGIC_NUMBER]
                 
                 # 🚨 LOCAL REGISTRY CHECK (Anti-Ghost Double-Entry) 🚨
-                last_entry_time = self._in_flight_registry.get(symbol, 0)
-                if time.time() - last_entry_time < 30: # 30s buffer for MT5 server sync
-                    log.warning(f"GHOST ENTRY BLOCKED for {symbol}. Local registry shows trade opened {round(time.time() - last_entry_time, 1)}s ago.")
+                # Linked to ExecutionEngine's synchronized cache for performance
+                last_entry_time = self.executor._recent_entries.get(symbol, 0)
+                if time.time() - last_entry_time < 10: # 10s buffer
+                    log.warning(f"GHOST ENTRY BLOCKED for {symbol}. Execution cache shows trade {round(time.time() - last_entry_time, 1)}s ago.")
                     # Record cycle as skipped
-                    total_ms = round(time.perf_counter() - cycle_start) * 1000, 1
+                    total_ms = round((time.perf_counter() - cycle_start) * 1000, 1)
                     await self.db.record_cycle(symbol, tf, report, ai_response, "SKIP (In-Flight)", 0.0, False, total_ms, DRY_RUN)
                     return
 
@@ -364,9 +363,6 @@ class MultiTimeframeBot:
                             lot_size, comment=f"AIBot_{tf}"
                         )
                         was_traded = order_result.get("success", False)
-                        if was_traded:
-                            self._in_flight_registry[symbol] = time.time()
-                            log.info(f"🚨 LOCAL REGISTRY UPDATED for {symbol} at {self._in_flight_registry[symbol]}")
 
                 except HaltTradingError as e:
                     log.critical(f"Halt triggered: {str(e)}")

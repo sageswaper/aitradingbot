@@ -34,6 +34,19 @@ class DataManager:
 
     def __init__(self, client: MT5Client) -> None:
         self._client = client
+        self._timeframe_map = {
+            "M1": mt5.TIMEFRAME_M1, "M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15,
+            "M30": mt5.TIMEFRAME_M30, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4,
+            "D1": mt5.TIMEFRAME_D1,
+        }
+
+    def _is_market_dead_zone(self) -> bool:
+        """Prop-Firm Safety: Block rollover time (23:55 to 00:05 UTC) due to insane spreads and no liquidity."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        if now.hour == 23 and now.minute >= 55: return True
+        if now.hour == 0 and now.minute <= 5: return True
+        return False
 
     # ── OHLC Fetching ─────────────────────────────────────────────
 
@@ -45,8 +58,12 @@ class DataManager:
     ) -> pd.DataFrame:
         """
         Fetch historical bars from MT5 and return a clean DataFrame.
-        Runs the blocking MT5 call in a thread-pool executor.
+        Includes Rollover Dead-Zone protection and Stale Data Guard.
         """
+        if self._is_market_dead_zone():
+            log.warning(f"Market Rollover Dead-Zone active. Blocking data fetch for {symbol}.")
+            return pd.DataFrame() # Return empty DF to force strategy to HOLD
+
         tf_const = MT5_TIMEFRAME_MAP.get(timeframe)
         if tf_const is None:
             raise ValueError(f"Unknown timeframe '{timeframe}'")
@@ -57,22 +74,21 @@ class DataManager:
         df = self._clean_ohlc(df)
 
         # 🚨 STALE DATA GUARD (Anti-Disconnect) 🚨
+        # Check if the last candle is too old (broker disconnect/lag detection)
+        import time
         if not df.empty:
-            tick = await asyncio.get_event_loop().run_in_executor(None, mt5.symbol_info_tick, symbol)
-            if tick:
-                server_now = tick.time
-                last_candle_time = int(df.index[-1].timestamp())
-                tf_secs = 60 # Default to M1
-                for k, v in MT5_TIMEFRAME_MAP.items():
-                    if v == tf_const:
-                        from multi_main import _TIMEFRAME_SECONDS
-                        tf_secs = _TIMEFRAME_SECONDS.get(k, 60)
-                        break
-                
-                # If data is older than 1.5x the timeframe, it's stale (disconnected)
-                if (server_now - last_candle_time) > (tf_secs * 1.5):
-                    log.error(f"STALE DATA DETECTED for {symbol}: Last candle {df.index[-1]} vs Server {datetime.fromtimestamp(server_now)}")
-                    return pd.DataFrame() # Return empty to block analysis
+            last_candle_time = df.index[-1].timestamp()
+            current_time = time.time()
+            
+            # Map timeframe string to seconds
+            tf_seconds = {
+                "M1": 60, "M2": 120, "M3": 180, "M4": 240, "M5": 300, 
+                "M10": 600, "M15": 900, "M30": 1800, "H1": 3600, "H4": 14400, "D1": 86400
+            }.get(timeframe, 3600)
+            
+            if (current_time - last_candle_time) > (tf_seconds * 2.5):
+                log.error(f"STALE DATA DETECTED for {symbol} [{timeframe}]. Broker lagging! Gap: {current_time - last_candle_time:.1f}s")
+                return pd.DataFrame() # Force HOLD
         
         log.debug("OHLC fetched", symbol=symbol, timeframe=timeframe, bars=len(df))
         return df
