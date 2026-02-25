@@ -442,15 +442,20 @@ class AIBrain:
             parsed["signal"] = "HOLD"
             parsed["reasoning"] += f" [Overridden to HOLD: confidence {confidence} < {MIN_CONFIDENCE_TO_TRADE}]"
 
-        # Logic Validator: Scan for contradictions
-        negative_keywords = ["dead volume", "invalid", "rejection", "risk too high", "failing", "neutral", "weakness"]
+        # Logic Validator: THE SLAP — Scan for institutional-grade contradictions
+        negative_keywords = [
+            "dead volume", "invalid", "thin volume", "rejection", "unacceptable", 
+            "risk too high", "stalled", "no momentum", "weakness", "neutral"
+        ]
+        
         reasoning_lower = parsed.get("reasoning", "").lower()
         if parsed["signal"] in ("BUY", "SELL"):
             for word in negative_keywords:
                 if word in reasoning_lower:
-                    log.warning(f"CONTRADICTION DETECTED: AI said {parsed['signal']} but reasoning contained '{word}'. Overriding to HOLD.")
+                    log.warning(f"[LOGIC GUARD] AI HALLUCINATION BLOCKED - Signal was {parsed['signal']} but reasoning said: '{word}'. Forced to HOLD.")
                     parsed["signal"] = "HOLD"
-                    parsed["reasoning"] = f"[LOGIC VETO: {word}] " + parsed["reasoning"]
+                    parsed["reasoning"] = f"[LOGIC GUARD VETO: {word}] " + parsed["reasoning"]
+                    parsed["confidence_score"] = 0.0
                     break
 
         return parsed

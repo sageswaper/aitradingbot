@@ -37,23 +37,22 @@ class BaseStrategy:
         return TradeDecision("HOLD", "Not implemented", 0.0)
 
     def _calculate_smc_levels(self, df: pd.DataFrame) -> dict:
-        """Calculates Previous Day/Session High/Low and finds Liquidity Sweeps."""
-        if len(df) < 50: return {}
+        """Professional SMC: Identify recent 10-bar liquidity pools."""
+        if len(df) < 10: return {}
         
-        # SMC: Calculate levels from earlier bars to allow for a sweep on the current/prev bar
-        history = df.iloc[-50:-2]
-        pdh = history["high"].max() 
-        pdl = history["low"].min()
+        recent_high = df['high'].tail(10).max()
+        recent_low = df['low'].tail(10).min()
         
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         
-        sweep_bullish = prev["low"] < pdl and latest["close"] > pdl
-        sweep_bearish = prev["high"] > pdh and latest["close"] < pdh
+        # SMC Sweep Logic: Price pierced the level on previous bar and rejected on current
+        sweep_bullish = latest["close"] > recent_low and prev["low"] <= recent_low
+        sweep_bearish = latest["close"] < recent_high and prev["high"] >= recent_high
         
         return {
-            "pdh": pdh,
-            "pdl": pdl,
+            "recent_high": recent_high,
+            "recent_low": recent_low,
             "sweep_bullish": sweep_bullish,
             "sweep_bearish": sweep_bearish
         }
@@ -94,18 +93,18 @@ class ForexStrategy(BaseStrategy):
         signal = "HOLD"
         reason = "No alignment"
         
-        if ai_sig == "BUY" and is_sweep_buy and trend_bullish:
+        if ai_sig == "BUY" and is_sweep_buy:
             signal = "BUY"
-            reason = f"Bullish Liquidity Sweep at {smc.get('pdl')}"
-        elif ai_sig == "SELL" and is_sweep_sell and not trend_bullish:
+            reason = f"SMC Buy: Liquidity Low Swept ({smc.get('recent_low')})"
+        elif ai_sig == "SELL" and is_sweep_sell:
             signal = "SELL"
-            reason = f"Bearish Liquidity Sweep at {smc.get('pdh')}"
+            reason = f"SMC Sell: Liquidity High Swept ({smc.get('recent_high')})"
         elif ai_sig == "EXIT":
             signal = "EXIT"
         
-        if signal == "HOLD" and ai_conf > 0.90:
+        if signal == "HOLD" and ai_conf > 0.85:
             signal = ai_sig
-            reason = "High Confidence AI Override"
+            reason = "AI Hyper-Confidence Breakout"
 
         return TradeDecision(signal, reason, ai_conf, 
                              ai_signal.get("entry_params", {}).get("suggested_price", current_price),

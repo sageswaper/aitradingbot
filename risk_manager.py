@@ -52,21 +52,36 @@ class RiskManager:
         drawdown_pct = (self._peak_equity - equity) / self._peak_equity * 100
 
         if drawdown_pct >= MAX_DRAWDOWN_PCT:
-            msg = f"DRAWDOWN LIMIT BREACHED: {drawdown_pct:.2f}% >= {MAX_DRAWDOWN_PCT}%"
+            msg = f"[CRITICAL] DRAWDOWN BREACH: {drawdown_pct:.2f}% >= {MAX_DRAWDOWN_PCT}% - ACTIVATING NUKE"
             log.critical(msg)
+            # If we're inside the orchestrator context, we can attempt a direct nuke
+            await self._nuke_all_positions()
             raise HaltTradingError(msg)
 
-    async def emergency_close_all(self, executor) -> int:
-        log.critical("EMERGENCY KILL-SWITCH ACTIVATED")
+    async def _nuke_all_positions(self) -> None:
+        """[NUCLEAR KILL SWITCH]: GTFO of every trade NOW. """
+        log.critical("[GTFO] CLOSING ALL POSITIONS IMMEDIATELY")
         positions = await self._client.get_open_positions()
-        count = 0
-        for pos in positions:
-            try:
-                await executor.close_position(pos.ticket, pos.symbol, float(pos.volume))
-                count += 1
-            except Exception as e:
-                log.error(f"Kill-Switch Error: {e}")
-        return count
+        from config import MAGIC_NUMBER
+        for p in positions:
+            if p.magic != MAGIC_NUMBER: continue
+            is_buy = p.type == mt5.ORDER_TYPE_BUY
+            price = (await self._client.get_current_price(p.symbol))[0 if is_buy else 1]
+            request = {
+                "action": int(mt5.TRADE_ACTION_DEAL),
+                "symbol": p.symbol,
+                "volume": p.volume,
+                "type": int(mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY),
+                "position": p.ticket,
+                "price": float(price),
+                "deviation": 50, # Extreme tolerance
+                "magic": MAGIC_NUMBER,
+                "comment": "NUCLEAR_PROTECTION",
+                "type_time": int(mt5.ORDER_TIME_GTC),
+                "type_filling": int(mt5.ORDER_FILLING_FOK)
+            }
+            await asyncio.get_event_loop().run_in_executor(None, mt5.order_send, request)
+            log.info(f"Nuked position {p.ticket} for {p.symbol}")
 
     async def check_simultaneous_trades(self, symbol: str) -> None:
         positions = await self._client.get_open_positions()
@@ -123,7 +138,8 @@ class RiskManager:
         lot_raw = risk_amount / ((price_dist / tick_size) * pip_value)
 
         from config import MAX_LOT_CAP
-        lot_raw = min(lot_raw, MAX_LOT_CAP)
+        # Apply user's absolute limit of 2.0 OR config's cap
+        lot_raw = min(lot_raw, MAX_LOT_CAP, 2.0)
         
         vol_step = symbol_info.get("volume_step", 0.01)
         lot_stepped = round(math.floor(lot_raw / vol_step) * vol_step, 2)

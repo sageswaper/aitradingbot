@@ -1,0 +1,8 @@
+text = text.split("```")[1].split("```")[0]
+try:
+parsed = json.loads(text.strip())
+if not isinstance(parsed, dict) or "signal" not in parsed: raise ValueError
+return parsed
+except Exception:
+log.warning("JSON decode failed")
+return dict(HOLD_FALLBACK)
