@@ -1,0 +1,30 @@
+﻿
+
+StatusCode        : 200
+StatusDescription : OK
+Content           : {
+                      "models": [
+                        {
+                          "name": "models/gemini-2.5-flash",
+                          "version": "001",
+                          "displayName": "Gemini 2.5 Flash",
+                          "description": "Stable version of Gemini 2.5 Flash, our mid-size m...
+RawContent        : HTTP/1.1 200 OK
+                    Vary: X-Origin,Referer,Origin,Accept-Encoding
+                    X-XSS-Protection: 0
+                    X-Frame-Options: SAMEORIGIN
+                    X-Content-Type-Options: nosniff
+                    Server-Timing: gfet4t7; dur=106
+                    Alt-Svc: h3=":443"; ...
+Forms             : {}
+Headers           : {[Vary, X-Origin,Referer,Origin,Accept-Encoding], [X-XSS-Protection, 0], [X-Frame-Options, 
+                    SAMEORIGIN], [X-Content-Type-Options, nosniff]...}
+Images            : {}
+InputFields       : {}
+Links             : {}
+ParsedHtml        : System.__ComObject
+RawContentLength  : 3795
+
+
+
+

@@ -1,0 +1,34 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+tests/.pytest_cache/
+
+# Databases
+*.db
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# Diagnostic/Temporary Scripts
+check_*.py
+diag_*.py
+debug_*.py
+extreme_stress_test.py
+stress_test_reasoning.py
+probe_symbol.py
+test_*.py
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
