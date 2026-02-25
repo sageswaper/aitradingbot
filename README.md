@@ -191,9 +191,10 @@ python monitor_sl.py
 
 ## 🩹 Institutional-Grade Fixes
 
+- **Trade Execution Resilience**: Added fallbacks for execution price fetching and partial deal data handling to ensure Telegram notifications are sent even when MT5 history synchronization is delayed.
+- **Execution Price Fallback**: Automatically fetches current market prices if the MT5 execution result returns zero, ensuring accurate Telegram notifications.
+- **Partial Data Survival**: The bot now sends closure notifications even if server-side deal history is delayed, using estimated prices as a fallback to prevent "silent closures".
 - **Timezone-Resilient Tracking**: Uses raw UNIX timestamps for history queries to bypass MT5/Local system clock mismatches.
-- **Symbol Name Normalization**: Hand-corrected symbol lists for Admirals/IC-Markets terminal differences.
-- **Global Exception Shield**: `multi_main.py` now survives terminal-level symbol initialization errors without crashing.
 
 ---
 

@@ -97,7 +97,14 @@ class ExecutionEngine:
                 self._recent_entries[symbol] = time.time()
                 log.info(f"🚨 LOCAL REGISTRY UPDATED for {symbol} at {self._recent_entries[symbol]}")
 
-                execution_price = result.get("price", entry_params.get("suggested_price", 0.0))
+                # Get actual execution price - use request price as fallback
+                exec_price_result = result.get("price", 0.0)
+                if exec_price_result == 0.0:
+                    # Fallback: get current market price
+                    bid, ask = await self._client.get_current_price(symbol)
+                    execution_price = ask if signal == "BUY" else bid
+                else:
+                    execution_price = float(exec_price_result)
                 
                 await TelegramNotifier.notify_trade_open(
                     symbol=symbol, signal=signal, lot=lot, price=float(execution_price),
@@ -192,14 +199,30 @@ class ExecutionEngine:
         if deals:
             for d in deals:
                 if d.position_id == ticket:
-                    if d.entry == 1: 
+                    if d.entry == 1:  # DEAL_ENTRY_OUT
                         profit = d.profit + d.commission + d.swap
                         close_price = d.price
                         trade_type = "BUY" if d.type == mt5.DEAL_TYPE_SELL else "SELL"
-                    elif d.entry == 0:
+                    elif d.entry == 0:  # DEAL_ENTRY_IN
                         entry_price = d.price
         
-        if entry_price == 0: return time.time()
+        # Always send notification, even if we couldn't fetch full deal data
+        if entry_price == 0:
+            log.warning(f"Could not fetch deal data for position {ticket}, sending partial notification")
+            # Try to at least get current price as close_price
+            if symbol:
+                try:
+                    bid, ask = await self._client.get_current_price(symbol)
+                    close_price = bid  # Use current bid as estimate
+                except:
+                    close_price = 0.0
+            # Send notification with whatever data we have
+            await TelegramNotifier.notify_trade_close(
+                symbol=symbol, ticket=ticket, profit=profit, detail="Position closed (partial data)",
+                lot=volume, entry_price=entry_price, close_price=close_price,
+                ai_explanation="تعذر جلب بيانات الصفقة الكاملة من السيرفر"
+            )
+            return time.time()
 
         trade_data = {"symbol": symbol, "profit": profit, "entry_price": entry_price, "close_price": close_price, "type": trade_type, "lot": volume}
         
@@ -240,14 +263,24 @@ class ExecutionEngine:
         
         result = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.order_send(request))
         if result and result.retcode in (mt5.TRADE_RETCODE_DONE, 10009, 0):
-            # Try to get actual profit
+            # Try to get actual profit and prices from history
             await asyncio.sleep(0.5)
             history = await asyncio.get_event_loop().run_in_executor(None, lambda: mt5.history_deals_get(position=ticket))
             profit = sum([d.profit + d.commission + d.swap for d in history if d.entry == mt5.DEAL_ENTRY_OUT]) if history else 0.0
             
+            # Get actual close price from deal history
+            actual_close_price = request["price"]  # fallback to request price
+            actual_entry_price = p.price_open
+            if history:
+                for d in history:
+                    if d.entry == mt5.DEAL_ENTRY_OUT:
+                        actual_close_price = d.price
+                    elif d.entry == mt5.DEAL_ENTRY_IN:
+                        actual_entry_price = d.price
+            
             trade_data = {
-                "symbol": symbol, "profit": profit, "entry_price": p.price_open, 
-                "close_price": request["price"], "type": "BUY" if is_buy else "SELL", "lot": lots
+                "symbol": symbol, "profit": profit, "entry_price": actual_entry_price,
+                "close_price": actual_close_price, "type": "BUY" if is_buy else "SELL", "lot": lots
             }
             
             # Trigger Comprehensive Post-Mortem
@@ -255,7 +288,7 @@ class ExecutionEngine:
 
             await TelegramNotifier.notify_trade_close(
                 symbol=symbol, ticket=ticket, profit=profit, detail=reason,
-                lot=lots, entry_price=p.price_open, close_price=request["price"], ai_explanation=ai_explanation
+                lot=lots, entry_price=actual_entry_price, close_price=actual_close_price, ai_explanation=ai_explanation
             )
             return {"success": True, "retcode": result.retcode, "profit": profit}
             
