@@ -32,15 +32,16 @@ class RiskManager:
     def __init__(self, client: MT5Client) -> None:
         self._client = client
         self._peak_equity: Optional[float] = None
-        self._day_start_balance: Optional[float] = None
-        self._last_day_checked: Optional[int] = None
+        self._daily_start_equity: Optional[float] = None
+        self._last_day_checked: Optional[str] = None
         self._nuked: bool = False
 
     async def check_all(self, symbol: str, signal: str, confidence: float) -> None:
+        await self._sync_daily_balance()
+        
         if signal == "HOLD" or self._nuked:
             return
 
-        await self._sync_daily_balance()
         await self.check_global_drawdown()
         await self.check_daily_drawdown()
         await self.check_simultaneous_trades(symbol)
@@ -49,13 +50,24 @@ class RiskManager:
         log.info("Risk checks passed", symbol=symbol, signal=signal)
 
     async def _sync_daily_balance(self) -> None:
-        """Tracks the balance at the start of each trading day."""
-        today = datetime.now().day
-        if self._last_day_checked != today:
+        """
+        [PROP-FIRM SYNC]: Tracks equity at 00:00 UTC.
+        Automatically resets the 'nuke' state for a fresh trading day.
+        """
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc)
+        today_utc = now_utc.strftime("%Y-%m-%d")
+        
+        if self._last_day_checked != today_utc:
             info = await self._client.account_info()
-            self._day_start_balance = info.balance
-            self._last_day_checked = today
-            log.info(f"New day detected. Start balance: {self._day_start_balance}")
+            self._daily_start_equity = info.equity # Prop-firm use equity snapshots
+            self._last_day_checked = today_utc
+            
+            if self._nuked:
+                log.info(f"New trading day {today_utc} detected. Resetting safety locks.")
+                self._nuked = False
+            
+            log.info(f"Daily Snapshot Captured (UTC): {self._daily_start_equity}")
 
     async def check_global_drawdown(self) -> None:
         """Protects against total account drawdown from the peak equity."""
@@ -79,9 +91,9 @@ class RiskManager:
         info = await self._client.account_info()
         equity = info.equity
         
-        if self._day_start_balance is None: return
+        if self._daily_start_equity is None: return
         
-        daily_loss_pct = (self._day_start_balance - equity) / self._day_start_balance * 100
+        daily_loss_pct = (self._daily_start_equity - equity) / self._daily_start_equity * 100
         
         if daily_loss_pct >= 2.0: # Hardcoded 2% daily limit for safety
             msg = f"[CRITICAL] DAILY DRAWDOWN BREACH: {daily_loss_pct:.2f}% >= 2.0%"
